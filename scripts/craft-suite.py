@@ -720,6 +720,19 @@ def main_screen(host: core.Host, state: core.State, *, prefix: Path = core.LOCAL
         if not tui.confirm("Continue anyway?", default=True):
             return 0
 
+    catalog = load_catalog(host)
+    installed = core.installed_snapshot(host, state)
+    state.installed.update(installed)
+
+    # Treat any machine that already has apps as past its first run, even when
+    # the state file predates this tool. Someone upgrading, or who installed
+    # the apps by hand, should land straight in the menu.
+    if not state.first_run_done and installed:
+        state.first_run_done = True
+        if not state.selected:
+            state.selected = sorted(installed)
+        state.save()
+
     if not state.first_run_done:
         tui.banner()
         print("  " + tui.C.bold("Welcome!"))
@@ -729,9 +742,6 @@ def main_screen(host: core.Host, state: core.State, *, prefix: Path = core.LOCAL
         print()
         input("  Press enter to fetch the app list ")
 
-    catalog = load_catalog(host)
-    installed = core.installed_snapshot(host, state)
-    state.installed.update(installed)
     rows = build_rows(catalog, installed, state)
 
     while True:
