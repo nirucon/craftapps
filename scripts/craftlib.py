@@ -254,6 +254,43 @@ def sha256_of(path: Path) -> str:
     return digest.hexdigest()
 
 
+def prune_downloads(keep: set[str] | None = None, *, max_age_days: int = 7) -> int:
+    """Delete leftover installers so the download folder does not grow forever.
+
+    Each release is 16-160 MB, so after a few update rounds a full app set
+    would otherwise leave gigabytes behind. The installer for the version
+    currently being installed is always kept (see `keep`); anything older than
+    `max_age_days` goes, along with stray `.part` files from interrupted runs.
+    Returns the number of bytes reclaimed.
+    """
+    if not DOWNLOAD_DIR.is_dir():
+        return 0
+
+    keep = keep or set()
+    reclaimer = int((time.time() - max_age_days * 86400) * 1e9)
+    reclaimed = 0
+
+    for entry in DOWNLOAD_DIR.iterdir():
+        try:
+            if entry.name in keep:
+                continue
+            if entry.name.endswith(".part"):
+                reclaimed += entry.stat().st_size
+                entry.unlink()
+                continue
+            if not entry.is_file():
+                continue
+            if entry.stat().st_mtime_ns < reclaimer:
+                reclaimed += entry.stat().st_size
+                entry.unlink()
+        except OSError:
+            continue
+
+    if reclaimed:
+        log(f"pruned {reclaimed / 1e6:.0f} MB of old downloads", quiet=True)
+    return reclaimed
+
+
 def fetch_checksums(url: str) -> dict[str, str]:
     """Download a SHA256SUMS.txt and return {filename: hexdigest}."""
     request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})

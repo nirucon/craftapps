@@ -354,6 +354,9 @@ def apply_changes(host: core.Host, state: core.State, rows: list[tui.Row],
             app = backend.install(release, path, reporter=reporter)
             state.installed[row.slug] = app
             state.save()
+            # The installer has been unpacked into place; only the file we just
+            # used is worth keeping, so the download folder stays bounded.
+            core.prune_downloads(keep={path.name})
             reporter(f"done — {app.version}")
         except core.CraftError as exc:
             failures.append(f"{label}: {exc}")
@@ -610,15 +613,19 @@ def run_autoupdate(host: core.Host, state: core.State, *, quiet: bool = True) ->
     if quiet:
         code = 0
         backend = core.choose_backend(host, state)
+        used: set[str] = set()
         for row in pending:
             try:
                 path, _ = core.download_release(catalog[row.slug], backend)
+                used.add(path.name)
                 state.installed[row.slug] = backend.install(catalog[row.slug], path)
                 state.save()
                 core.log(f"autoupdate: {row.slug} → {catalog[row.slug].version}")
+                core.prune_downloads(keep=set(used))
             except Exception as exc:  # noqa: BLE001
                 core.log(f"autoupdate: {row.slug} failed: {exc}")
                 code = 1
+        core.prune_downloads(keep=set(used))
         state.last_check = time.time()
         state.save()
         return code
