@@ -358,9 +358,8 @@ def apply_changes(host: core.Host, state: core.State, rows: list[tui.Row],
             app = backend.install(release, path, reporter=reporter)
             state.installed[row.slug] = app
             state.save()
-            # The installer has been unpacked into place; only the file we just
-            # used is worth keeping, so the download folder stays bounded.
-            core.prune_downloads(keep={path.name})
+            # The installer is unpacked into place, so it is no longer needed.
+            core.prune_downloads()
             reporter(f"done — {app.version}")
         except core.CraftError as exc:
             failures.append(f"{label}: {exc}")
@@ -910,6 +909,11 @@ def main(argv: list[str] | None = None) -> int:
             rows = build_rows(catalog, core.installed_snapshot(host, state), state)
             for row in rows:
                 row.selected = row.slug in wanted
+            # A deliberate command-line install counts as having chosen apps,
+            # so a later interactive run goes straight to the menu.
+            state.selected = sorted(set(state.selected) | set(wanted))
+            state.first_run_done = True
+            state.save()
             return apply_changes(host, state, rows, catalog, prefix=prefix)
         return main_screen(host, state, prefix=prefix)
     except KeyboardInterrupt:

@@ -254,13 +254,14 @@ def sha256_of(path: Path) -> str:
     return digest.hexdigest()
 
 
-def prune_downloads(keep: set[str] | None = None, *, max_age_days: int = 7) -> int:
+def prune_downloads(keep: set[str] | None = None, *, max_age_days: float = 0) -> int:
     """Delete leftover installers so the download folder does not grow forever.
 
     Each release is 16-160 MB, so after a few update rounds a full app set
-    would otherwise leave gigabytes behind. The installer for the version
-    currently being installed is always kept (see `keep`); anything older than
-    `max_age_days` goes, along with stray `.part` files from interrupted runs.
+    would otherwise leave gigabytes behind. Once an installer has been
+    unpacked into place it is no longer needed, so by default everything
+    except the file named in `keep` is removed. A stale `.part` from an
+    interrupted run is always cleared.
     Returns the number of bytes reclaimed.
     """
     if not DOWNLOAD_DIR.is_dir():
