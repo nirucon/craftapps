@@ -517,6 +517,49 @@ def have(program: str) -> bool:
     return shutil.which(program) is not None
 
 
+def sudo_is_passwordless() -> bool:
+    """True when sudo can run without prompting (NOPASSWD or a warm cache)."""
+    if not have("sudo"):
+        return os.geteuid() == 0
+    if os.geteuid() == 0:
+        return True
+    try:
+        result = subprocess.run(["sudo", "-n", "true"], stdout=subprocess.DEVNULL,
+                                stderr=subprocess.DEVNULL, timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return result.returncode == 0
+
+
+def sudo_prefix() -> list[str]:
+    """How to invoke a privileged command.
+
+    Prefer a non-interactive sudo, which keeps unattended runs from hanging on
+    a password prompt. When that is not available and we have a terminal, fall
+    back to an interactive sudo so the user can simply type their password,
+    which is what they expect from the menu.
+    """
+    if os.geteuid() == 0:
+        return []
+    if not have("sudo"):
+        raise CraftError("This install needs root, but sudo is not installed.")
+    if sudo_is_passwordless():
+        return ["sudo", "-n"]
+    if sys.stdin.isatty() and sys.stdout.isatty():
+        return ["sudo"]
+    raise CraftError(
+        "This install needs sudo, which cannot prompt for a password here. "
+        "Run craft-suite in a terminal, or run 'sudo -v' first."
+    )
+
+
+def sudo_run(args: list[str], **kwargs) -> subprocess.CompletedProcess:
+    """Run a privileged command, streaming its output so prompts work."""
+    cmd = sudo_prefix() + args
+    log("run: " + " ".join(cmd), quiet=True)
+    return subprocess.run(cmd, **kwargs)
+
+
 class DebianBackend:
     """Install .deb packages through apt, which resolves the Depends: fields."""
 
@@ -536,29 +579,48 @@ class DebianBackend:
         if reporter:
             reporter("Installing " + release.name + " with apt (needs sudo)…")
         env = dict(os.environ)
-        # Never let apt open an interactive prompt we cannot answer.
+        # Never let apt open an interactive prompt we cannot answer; the only
+        # prompt we want to allow through is sudo asking for a password.
         env["DEBIAN_FRONTEND"] = "noninteractive"
-        cmd = ["sudo", "-n", "apt-get", "install", "-y", "--no-install-recommends", str(path)]
-        result = subprocess.run(cmd, env=env, text=True,
-                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        interactive = sys.stdin.isatty() and sys.stdout.isatty()
+        result = sudo_run(
+            ["apt-get", "install", "-y", "--no-install-recommends", str(path)],
+            env=env, text=True,
+            stdout=None if interactive else subprocess.PIPE,
+            stderr=None if interactive else subprocess.STDOUT,
+        )
         if result.returncode != 0:
-            if "password is required" in (result.stdout or "") or "sudo:" in (result.stdout or ""):
+            output = result.stdout or ""
+            if "password is required" in output or "a password is required" in output:
                 raise CraftError(
-                    "sudo requires a password. Run the script in a real terminal, "
+                    "sudo needs a password. Run craft-suite in a terminal, "
                     "or run 'sudo -v' first."
                 )
-            raise CraftError(f"apt misslyckades:\n{result.stdout.strip()[-2000:]}")
+            raise CraftError(
+                f"apt failed (exit {result.returncode})"
+                + (f":\n{output.strip()[-2000:]}" if output else "")
+            )
         if reporter:
-            reporter(result.stdout.strip().splitlines()[-1] if result.stdout.strip() else "done")
+            tail = (result.stdout or "").strip().splitlines()
+            reporter(tail[-1] if tail else "done")
         return InstalledApp(release.slug, release.version, "deb", installed_at=now())
 
     def uninstall(self, app: InstalledApp, *, reporter=None) -> None:
         if reporter:
             reporter(f"Removing {app.slug} with apt…")
-        result = subprocess.run(["sudo", "-n", "apt-get", "remove", "-y", app.slug],
-                                text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        interactive = sys.stdin.isatty() and sys.stdout.isatty()
+        result = sudo_run(
+            ["apt-get", "remove", "-y", app.slug],
+            text=True,
+            stdout=None if interactive else subprocess.PIPE,
+            stderr=None if interactive else subprocess.STDOUT,
+        )
         if result.returncode != 0:
-            raise CraftError(f"apt remove misslyckades:\n{result.stdout.strip()[-1000:]}")
+            output = result.stdout or ""
+            raise CraftError(
+                f"apt remove failed (exit {result.returncode})"
+                + (f":\n{output.strip()[-1000:]}" if output else "")
+            )
 
     def guess_installed(self) -> dict[str, InstalledApp]:
         """Read dpkg's database so apps installed by hand are recognised."""
@@ -805,7 +867,7 @@ class XdebBackend(TarballBackend):
                                 text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         if result.returncode != 0:
             shutil.rmtree(work, ignore_errors=True)
-            raise CraftError(f"xdeb misslyckades:\n{result.stdout.strip()[-1500:]}")
+            raise CraftError(f"xdeb failed:\n{result.stdout.strip()[-1500:]}")
         repo = work / "binpkgs"
         packages = sorted(repo.glob("*.xbps"))
         if not packages:
@@ -813,12 +875,20 @@ class XdebBackend(TarballBackend):
             raise CraftError("xdeb produced no package")
         if reporter:
             reporter("Installing with xbps-install (needs sudo)…")
-        cmd = ["sudo", "-n", "xbps-install", "-R", str(repo), "-y", packages[0].name]
-        result = subprocess.run(cmd, text=True, stdout=subprocess.PIPE,
-                                stderr=subprocess.STDOUT)
+        interactive = sys.stdin.isatty() and sys.stdout.isatty()
+        result = sudo_run(
+            ["xbps-install", "-R", str(repo), "-y", packages[0].name],
+            text=True,
+            stdout=None if interactive else subprocess.PIPE,
+            stderr=None if interactive else subprocess.STDOUT,
+        )
         shutil.rmtree(work, ignore_errors=True)
         if result.returncode != 0:
-            raise CraftError(f"xbps-install misslyckades:\n{result.stdout.strip()[-1500:]}")
+            output = result.stdout or ""
+            raise CraftError(
+                f"xbps-install failed (exit {result.returncode})"
+                + (f":\n{output.strip()[-1500:]}" if output else "")
+            )
         return InstalledApp(release.slug, release.version, "deb", installed_at=now())
 
 
