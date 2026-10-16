@@ -340,10 +340,6 @@ def apply_changes(host: core.Host, state: core.State, rows: list[tui.Row],
 
     progress = tui.Progress()
     progress.start()
-    # Reserve one line per app before anything starts, so updates never
-    # trample each other.
-    for row in todo:
-        progress.reserve(row.name)
     failures: list[str] = []
     state.selected = sorted(r.slug for r in rows if r.selected)
 

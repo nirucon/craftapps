@@ -8,6 +8,7 @@ when autoupdate runs from a timer).
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import sys
 import termios
@@ -339,59 +340,54 @@ def confirm(prompt: str, *, default: bool = False) -> bool:
 
 
 class Progress:
-    """One line per app, rewritten in place as work proceeds.
+    """Per-app progress that cannot scramble the screen.
 
-    Each reporter owns a fixed screen line. Lines are reserved up front, so
-    concurrent updates never overlap and the final output is a clean list
-    rather than a pile of half-overwritten rows.
+    An earlier version tried to rewrite one line per app using cursor
+    arithmetic (save/restore plus "move up N"). That is fragile in exactly
+    the situations this tool hits: the terminal scrolls while many apps
+    download, and on Debian apt and sudo write their own output to the same
+    terminal. Once anything scrolls, the remembered row is wrong and the
+    display turns into overlapping fragments.
+
+    So this does not move the cursor at all. Each app prints its milestones as
+    ordinary lines, which is always correct, survives scrolling and
+    interleaved child output, and stays readable when piped to a file or a log.
     """
 
     def __init__(self) -> None:
-        self._lines: dict[str, int] = {}
-        self._next = 0
-        self._started = False
+        self._last: dict[str, str] = {}
 
     def start(self) -> None:
-        _hide_cursor()
-        self._started = True
-        sys.stdout.flush()
+        pass
 
     def reserve(self, label: str) -> None:
-        """Claim a screen line for an app before the work begins."""
-        if label in self._lines:
-            return
-        self._lines[label] = self._next
-        # Print a placeholder so the line exists and is counted.
-        sys.stdout.write("\n")
-        self._next += 1
-        sys.stdout.flush()
+        """Nothing to reserve: output is append-only."""
 
     def reporter(self, label: str):
-        """Return a callable that redraws this app's own line."""
-        self.reserve(label)
-        line = self._lines[label]
+        """Return a callable that prints an app's progress as plain lines."""
 
         def report(message: str, *, replace: bool = False) -> None:
-            text = f"  {C.cyan('•')} {label}: {message}"
-            up = self._next - 1 - line
-            # Save, walk up to our line, rewrite it, restore. Using the
-            # DECSC/DECRC pair (ESC 7 / ESC 8) rather than ESC[s/ESC[u, which
-            # some terminals render literally.
-            sys.stdout.write(f"{ESCAPE}7")
-            if up > 0:
-                sys.stdout.write(f"{ESCAPE}{up}A")
-            sys.stdout.write(f"\r{ESCAPE}2K{text}")
-            sys.stdout.write(f"{ESCAPE}8")
+            text = message.strip()
+            if not text:
+                return
+            if replace and (percent := re.search(r"(\d+)%", text)):
+                # A download tick: repeat at 10% steps so the user sees real
+                # movement without one line per few hundred KB.
+                signature = f"tick:{int(percent.group(1)) // 10}"
+            else:
+                # Ignore the digits so a repeated tick collapses, while a
+                # change of wording (checksum, unpacking, done) still shows.
+                signature = re.sub(r"\d+", "#", text)
+            if self._last.get(label) == signature:
+                return
+            self._last[label] = signature
+            sys.stdout.write(f"  {C.cyan('•')} {label}: {text}\n")
             sys.stdout.flush()
 
         return report
 
     def finish(self) -> None:
-        if self._started:
-            # Land on a fresh line below the reserved block.
-            sys.stdout.write("\n")
-            _show_cursor()
-            sys.stdout.flush()
+        sys.stdout.flush()
 
 
 def success(message: str) -> None:
