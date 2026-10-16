@@ -82,6 +82,22 @@ export GITHUB_TOKEN=ghp_your_token_here
 
 Responses are cached for a few hours, so normal use stays well under the limit either way.
 
+## How light it is
+
+Measured on x86_64:
+
+| | |
+| --- | --- |
+| Startup (`--version`) | ~0.1 s |
+| Memory while running | ~26 MB |
+| CPU while the menu waits for a key | 0% (it blocks on input, it does not poll) |
+| Subprocesses on a cached `--list` | none |
+| Time for `--list` from cache | ~0.2 s |
+
+The daily check runs once and exits; nothing stays resident in the background
+(it is a timer, not a daemon). Installers are deleted after they are used, and
+anything older than a week is cleared, so the download folder does not grow.
+
 ## Requirements
 
 - Python 3.10 or newer (standard library only — nothing to `pip install`).
