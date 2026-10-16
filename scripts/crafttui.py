@@ -339,39 +339,59 @@ def confirm(prompt: str, *, default: bool = False) -> bool:
 
 
 class Progress:
-    """Two-line progress area: one line per app, updated in place."""
+    """One line per app, rewritten in place as work proceeds.
+
+    Each reporter owns a fixed screen line. Lines are reserved up front, so
+    concurrent updates never overlap and the final output is a clean list
+    rather than a pile of half-overwritten rows.
+    """
 
     def __init__(self) -> None:
-        self.active: int | None = None
+        self._lines: dict[str, int] = {}
+        self._next = 0
+        self._started = False
 
     def start(self) -> None:
         _hide_cursor()
+        self._started = True
+        sys.stdout.flush()
+
+    def reserve(self, label: str) -> None:
+        """Claim a screen line for an app before the work begins."""
+        if label in self._lines:
+            return
+        self._lines[label] = self._next
+        # Print a placeholder so the line exists and is counted.
         sys.stdout.write("\n")
+        self._next += 1
         sys.stdout.flush()
 
     def reporter(self, label: str):
-        """Return a callable that redraws this app's progress line."""
-        if self.active is None:
-            self.active = 0
-        my_line = self.active
-        self.active += 1
+        """Return a callable that redraws this app's own line."""
+        self.reserve(label)
+        line = self._lines[label]
 
         def report(message: str, *, replace: bool = False) -> None:
             text = f"  {C.cyan('•')} {label}: {message}"
-            # Move up to our line, rewrite it, come back down.
-            sys.stdout.write(f"{ESCAPE}s")  # save
-            if my_line:
-                sys.stdout.write(f"{ESCAPE}{my_line}A")
+            up = self._next - 1 - line
+            # Save, walk up to our line, rewrite it, restore. Using the
+            # DECSC/DECRC pair (ESC 7 / ESC 8) rather than ESC[s/ESC[u, which
+            # some terminals render literally.
+            sys.stdout.write(f"{ESCAPE}7")
+            if up > 0:
+                sys.stdout.write(f"{ESCAPE}{up}A")
             sys.stdout.write(f"\r{ESCAPE}2K{text}")
-            sys.stdout.write(f"{ESCAPE}u")  # restore
+            sys.stdout.write(f"{ESCAPE}8")
             sys.stdout.flush()
 
         return report
 
     def finish(self) -> None:
-        sys.stdout.write("\n")
-        _show_cursor()
-        sys.stdout.flush()
+        if self._started:
+            # Land on a fresh line below the reserved block.
+            sys.stdout.write("\n")
+            _show_cursor()
+            sys.stdout.flush()
 
 
 def success(message: str) -> None:

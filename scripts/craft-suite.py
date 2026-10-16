@@ -340,6 +340,10 @@ def apply_changes(host: core.Host, state: core.State, rows: list[tui.Row],
 
     progress = tui.Progress()
     progress.start()
+    # Reserve one line per app before anything starts, so updates never
+    # trample each other.
+    for row in todo:
+        progress.reserve(row.name)
     failures: list[str] = []
     state.selected = sorted(r.slug for r in rows if r.selected)
 
@@ -368,12 +372,16 @@ def apply_changes(host: core.Host, state: core.State, rows: list[tui.Row],
     progress.finish()
     print()
 
+    installed_now = []
+    updated_now = []
     for row in todo:
         if any(f.startswith(row.name + ":") for f in failures):
             continue
         if row.status == "update":
+            updated_now.append(f"{row.name} → {catalog[row.slug].version}")
             tui.success(f"{row.name} updated to {catalog[row.slug].version}")
         else:
+            installed_now.append(f"{row.name} {catalog[row.slug].version}")
             tui.success(f"{row.name} {catalog[row.slug].version} installed")
 
     for message in failures:
@@ -382,10 +390,23 @@ def apply_changes(host: core.Host, state: core.State, rows: list[tui.Row],
     state.last_check = time.time()
     state.save()
 
-    remaining = [r for r in rows if r.selected and r.status == "new"]
-    if remaining and not failures:
-        print()
-        tui.info("Run the script again to install more whenever you like.")
+    print()
+    summary = []
+    if installed_now:
+        summary.append(f"{len(installed_now)} installed")
+    if updated_now:
+        summary.append(f"{len(updated_now)} updated")
+    if failures:
+        summary.append(f"{len(failures)} failed")
+    tui.info("Done: " + (", ".join(summary) if summary else "nothing changed"))
+    if installed_now and not failures:
+        tui.info("The apps are in your application menu now.")
+
+    # Keep the window open so the summary can be read before returning to the
+    # menu, instead of the program vanishing the moment it finishes.
+    if tui.interactive():
+        input("\n  Press enter to continue ")
+
     return 1 if failures else 0
 
 
@@ -735,7 +756,7 @@ def main_screen(host: core.Host, state: core.State, *, prefix: Path = core.LOCAL
                 if r.status == "update":
                     lines.append(f"    {r.name:<16} {r.installed} → {r.latest}")
                 elif r.status == "installed":
-                    lines.append(f"    {r.name:<16} {r.latest}  (aktuell)")
+                    lines.append(f"    {r.name:<16} {r.latest}  (current)")
             choice = tui.choose("What would you like to do?", [label for _, label in options])
             if choice is None:
                 return 0
@@ -744,7 +765,10 @@ def main_screen(host: core.Host, state: core.State, *, prefix: Path = core.LOCAL
             if action == "update":
                 for row in rows:
                     row.selected = row.status == "update"
-                return apply_changes(host, state, rows, catalog, prefix=prefix)
+                apply_changes(host, state, rows, catalog, prefix=prefix)
+                catalog = load_catalog(host)
+                rows = build_rows(catalog, core.installed_snapshot(host, state), state)
+                continue
             if action == "quit":
                 return 0
             if action == "refresh":
@@ -769,7 +793,10 @@ def main_screen(host: core.Host, state: core.State, *, prefix: Path = core.LOCAL
                     continue
                 for row in rows:
                     row.selected = row in chosen
-                return apply_changes(host, state, rows, catalog, prefix=prefix)
+                apply_changes(host, state, rows, catalog, prefix=prefix)
+                catalog = load_catalog(host)
+                rows = build_rows(catalog, core.installed_snapshot(host, state), state)
+                continue
             # action == "manage" falls through to the picker below.
 
         else:
@@ -782,7 +809,10 @@ def main_screen(host: core.Host, state: core.State, *, prefix: Path = core.LOCAL
             if not chosen:
                 tui.info("No apps selected. Run the script again whenever you like.")
                 return 0
-            return apply_changes(host, state, rows, catalog, prefix=prefix)
+            apply_changes(host, state, rows, catalog, prefix=prefix)
+            # Back to the menu so the summary is followed by something usable,
+            # rather than the program closing on the user.
+            continue
 
         # "Manage everything": free selection, updates pre-ticked, in-place changes.
         for row in rows:
@@ -790,7 +820,9 @@ def main_screen(host: core.Host, state: core.State, *, prefix: Path = core.LOCAL
         chosen = tui.select_apps(rows, title="Choose apps (updates are pre-selected)")
         if chosen is None:
             continue
-        return apply_changes(host, state, rows, catalog, prefix=prefix)
+        apply_changes(host, state, rows, catalog, prefix=prefix)
+        catalog = load_catalog(host)
+        rows = build_rows(catalog, core.installed_snapshot(host, state), state)
 
 
 # --------------------------------------------------------------------------
